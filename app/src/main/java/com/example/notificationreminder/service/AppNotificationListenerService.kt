@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.SystemClock
@@ -33,6 +34,7 @@ class AppNotificationListenerService : NotificationListenerService() {
         super.onCreate()
         instance = this
         repository = PreferencesRepository(applicationContext)
+        createNotificationChannel()
         Log.d(TAG, "Notification Listener Service created.")
     }
 
@@ -43,24 +45,23 @@ class AppNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
-        startForegroundNotification(emptyList())
+        updateForegroundNotification(emptyList())
         observePreferences()
     }
 
-    private fun startForegroundNotification(trackedItems: List<TrackedNotificationItem>) {
-        val channelId = "reminder_service_channel"
+    private fun createNotificationChannel() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Notification Reminder Service",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Keeps notification reminders active when screen is off"
-            }
-            manager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Notification Reminder Service",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Keeps notification reminders active when screen is off"
         }
+        manager.createNotificationChannel(channel)
+    }
 
+    private fun updateForegroundNotification(trackedItems: List<TrackedNotificationItem>) {
         val openAppIntent = PendingIntent.getActivity(
             this,
             0,
@@ -89,7 +90,7 @@ class AppNotificationListenerService : NotificationListenerService() {
             contentText = "Active for: $appNames"
         }
 
-        val builder = NotificationCompat.Builder(this, channelId)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(titleText)
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
@@ -126,6 +127,14 @@ class AppNotificationListenerService : NotificationListenerService() {
         }
     }
 
+    /**
+     * Queries the system for active notifications and updates tracked state.
+     * This method is safe to call from any thread — it launches work on Dispatchers.IO
+     * and updates shared state atomically.
+     *
+     * For synchronous notification querying (e.g. from ReminderAlarmReceiver),
+     * use [queryTrackedNotifications] instead.
+     */
     fun syncActiveNotifications(enabledApps: Set<String>? = null) {
         try {
             val activeNotifs = activeNotifications ?: run {
@@ -135,47 +144,10 @@ class AppNotificationListenerService : NotificationListenerService() {
             }
 
             scope.launch {
-                val targetEnabledApps = enabledApps ?: repository.enabledAppsFlow.first()
-                val pm = packageManager
-                val trackedList = mutableListOf<TrackedNotificationItem>()
-
-                for (sbn in activeNotifs) {
-                    val pkg = sbn.packageName ?: continue
-                    if (pkg == packageName) continue
-
-                    // Ignore ongoing/foreground system notifications or group summaries that aren't user messages
-                    val flags = sbn.notification?.flags ?: 0
-                    val isOngoing = (flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
-                            (flags and Notification.FLAG_FOREGROUND_SERVICE) != 0 ||
-                            (flags and Notification.FLAG_GROUP_SUMMARY) != 0
-                    if (isOngoing) continue
-
-                    if (targetEnabledApps.contains(pkg)) {
-                        val extras = sbn.notification?.extras
-                        val title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "Notification"
-                        val text = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
-                        val appLabel = try {
-                            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-                        } catch (e: Exception) {
-                            pkg
-                        }
-
-                        trackedList.add(
-                            TrackedNotificationItem(
-                                key = sbn.key,
-                                packageName = pkg,
-                                appName = appLabel,
-                                title = title,
-                                text = text,
-                                postTime = sbn.postTime
-                            )
-                        )
-                    }
-                }
-
+                val trackedList = buildTrackedList(activeNotifs, enabledApps)
                 Log.d(TAG, "Synced active notifications. Tracked count: ${trackedList.size}")
                 TrackedNotificationRepository.updateItems(trackedList)
-                startForegroundNotification(trackedList)
+                updateForegroundNotification(trackedList)
 
                 if (trackedList.isNotEmpty()) {
                     scheduleNextReminder()
@@ -186,6 +158,72 @@ class AppNotificationListenerService : NotificationListenerService() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to sync active notifications", e)
         }
+    }
+
+    /**
+     * Synchronously queries active notifications and returns the tracked list.
+     * Used by [ReminderAlarmReceiver] to avoid race conditions between async sync
+     * and the chime decision.
+     */
+    suspend fun queryTrackedNotifications(): List<TrackedNotificationItem> {
+        val activeNotifs = try {
+            activeNotifications
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to query active notifications", e)
+            null
+        }
+        if (activeNotifs == null) return emptyList()
+        return buildTrackedList(activeNotifs, null)
+    }
+
+    private suspend fun buildTrackedList(
+        activeNotifs: Array<StatusBarNotification>,
+        enabledApps: Set<String>?
+    ): List<TrackedNotificationItem> {
+        val targetEnabledApps = enabledApps ?: repository.enabledAppsFlow.first()
+        val pm = packageManager
+        val trackedList = mutableListOf<TrackedNotificationItem>()
+
+        for (sbn in activeNotifs) {
+            val pkg = sbn.packageName ?: continue
+            if (pkg == packageName) continue
+
+            val flags = sbn.notification?.flags ?: 0
+            val isOngoing = (flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
+                    (flags and Notification.FLAG_FOREGROUND_SERVICE) != 0 ||
+                    (flags and Notification.FLAG_GROUP_SUMMARY) != 0
+            if (isOngoing) continue
+
+            if (targetEnabledApps.contains(pkg)) {
+                val extras = sbn.notification?.extras
+                val title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "Notification"
+                val text = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+                val appLabel = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        pm.getApplicationLabel(
+                            pm.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0))
+                        ).toString()
+                    } else {
+                        @Suppress("DEPRECATION")
+                        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+                    }
+                } catch (e: Exception) {
+                    pkg
+                }
+
+                trackedList.add(
+                    TrackedNotificationItem(
+                        key = sbn.key,
+                        packageName = pkg,
+                        appName = appLabel,
+                        title = title,
+                        text = text,
+                        postTime = sbn.postTime
+                    )
+                )
+            }
+        }
+        return trackedList
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -224,19 +262,11 @@ class AppNotificationListenerService : NotificationListenerService() {
 
         val triggerTime = SystemClock.elapsedRealtime() + (intervalMinutes * 60 * 1000L)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-        } else {
-            alarmManager.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-        }
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            triggerTime,
+            pendingIntent
+        )
         Log.d(TAG, "Scheduled exact reminder alarm in $intervalMinutes minutes.")
     }
 
@@ -253,14 +283,16 @@ class AppNotificationListenerService : NotificationListenerService() {
         )
         alarmManager.cancel(pendingIntent)
         TrackedNotificationRepository.clearAll()
-        startForegroundNotification(emptyList())
+        updateForegroundNotification(emptyList())
         Log.d(TAG, "Cancelled notification reminder alarm.")
     }
 
     companion object {
         private const val TAG = "AppNotifListener"
+        private const val CHANNEL_ID = "reminder_service_channel"
         const val REMINDER_REQ_CODE = 1001
         private const val NOTIFICATION_ID = 9001
+        @Volatile
         var instance: AppNotificationListenerService? = null
     }
 }

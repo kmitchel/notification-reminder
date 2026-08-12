@@ -11,7 +11,6 @@ import android.os.CombinedVibration
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.VibrationEffect
-import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import com.example.notificationreminder.data.PreferencesRepository
@@ -26,41 +25,29 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            ACTION_CLEAR_ALL_REMINDERS -> {
-                Log.d(TAG, "Received ACTION_CLEAR_ALL_REMINDERS. Stopping all active reminders.")
-                AppNotificationListenerService.instance?.cancelReminder()
-                TrackedNotificationRepository.clearAll()
-                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                val repeatIntent = Intent(context, ReminderAlarmReceiver::class.java).apply {
-                    action = ACTION_REPEAT_REMINDER
-                }
-                val pendingIntent = PendingIntent.getBroadcast(
-                    context,
-                    AppNotificationListenerService.REMINDER_REQ_CODE,
-                    repeatIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                alarmManager.cancel(pendingIntent)
-                return
-            }
-            ACTION_REPEAT_REMINDER -> {
-                handleRepeatReminder(context)
-            }
+            ACTION_CLEAR_ALL_REMINDERS -> handleClearAll(context)
+            ACTION_REPEAT_REMINDER -> handleRepeatReminder(context)
         }
     }
 
+    private fun handleClearAll(context: Context) {
+        Log.d(TAG, "Received ACTION_CLEAR_ALL_REMINDERS. Stopping all active reminders.")
+        AppNotificationListenerService.instance?.cancelReminder()
+        TrackedNotificationRepository.clearAll()
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val repeatIntent = Intent(context, ReminderAlarmReceiver::class.java).apply {
+            action = ACTION_REPEAT_REMINDER
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            AppNotificationListenerService.REMINDER_REQ_CODE,
+            repeatIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmManager.cancel(pendingIntent)
+    }
+
     private fun handleRepeatReminder(context: Context) {
-        val service = AppNotificationListenerService.instance
-        if (service != null) {
-            service.syncActiveNotifications()
-        }
-
-        val trackedItems = TrackedNotificationRepository.trackedItems.value
-        if (trackedItems.isEmpty()) {
-            Log.d(TAG, "No active tracked notifications found during alarm trigger. Suppressing chime and stopping alarm loop.")
-            return
-        }
-
         val pendingResult = goAsync()
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(
@@ -73,6 +60,18 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                // Synchronously query active notifications to avoid race condition
+                val service = AppNotificationListenerService.instance
+                val trackedItems = service?.queryTrackedNotifications() ?: emptyList()
+
+                // Update shared state so the UI reflects current reality
+                TrackedNotificationRepository.updateItems(trackedItems)
+
+                if (trackedItems.isEmpty()) {
+                    Log.d(TAG, "No active tracked notifications. Suppressing chime and stopping alarm loop.")
+                    return@launch
+                }
+
                 val quietEnabled = repository.quietHoursEnabledFlow.first()
                 if (quietEnabled) {
                     val startHour = repository.quietHoursStartFlow.first()
@@ -119,19 +118,14 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
     private fun triggerVibration(context: Context) {
         try {
             val pattern = longArrayOf(0, 300, 200, 300)
+            val effect = VibrationEffect.createWaveform(pattern, -1)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                val effect = VibrationEffect.createWaveform(pattern, -1)
                 vibratorManager.vibrate(CombinedVibration.createParallel(effect))
             } else {
                 @Suppress("DEPRECATION")
-                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator.vibrate(pattern, -1)
-                }
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+                vibrator.vibrate(effect)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to trigger vibration", e)
@@ -153,19 +147,11 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
         )
 
         val triggerTime = SystemClock.elapsedRealtime() + (intervalMinutes * 60 * 1000L)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-        } else {
-            alarmManager.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-        }
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            triggerTime,
+            pendingIntent
+        )
     }
 
     private fun isCurrentTimeInQuietHours(startHour: Int, endHour: Int): Boolean {

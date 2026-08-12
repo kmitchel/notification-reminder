@@ -24,7 +24,7 @@ class PreferencesRepository(private val context: Context) {
     }
 
     val enabledAppsFlow: Flow<Set<String>> = context.dataStore.data.map { prefs ->
-        prefs[ENABLED_APPS] ?: setOf("com.google.android.apps.messaging", "com.whatsapp")
+        prefs[ENABLED_APPS] ?: emptySet()
     }
 
     val repeatIntervalFlow: Flow<Int> = context.dataStore.data.map { prefs ->
