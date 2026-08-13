@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Glow Ring behind Bell -->
+    <path
+        android:fillColor="#38BDF8"
+        android:fillAlpha="0.15"
+        android:pathData="M54,20 A34,34 0 1,1 53.9,20 Z" />
+
+    <!-- Pulse chime arc lines (signifying repeating reminder) -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M28,42 C23,48 23,60 28,66" />
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M80,42 C85,48 85,60 80,66" />
+
+    <!-- Bell Top Ring -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M54,24 C51.79,24 50,25.79 50,28 L58,28 C58,25.79 56.21,24 54,24 Z" />
+
+    <!-- Bell Body -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M54,28 C44.06,28 36,36.06 36,46 L36,58 C36,61 33,64 30,64 L30,66 L78,66 L78,64 C75,64 72,61 72,58 L72,46 C72,36.06 63.94,28 54,28 Z" />
+
+    <!-- Bell Clapper -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M47,68 C47,71.87 50.13,75 54,75 C57.87,75 61,71.87 61,68 Z" />
+
+    <!-- Notification Pulse Badge (Top Right) -->
+    <path
+        android:fillColor="#4ADE80"
+        android:pathData="M70,30 A6.5,6.5 0 1,1 69.9,30 Z" />
+</vector>
