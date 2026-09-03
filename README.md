@@ -1,94 +1,58 @@
-# 🔔 Notification Reminders for Google Pixel & Android
+# Notification Reminder
 
-[![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://android.com)
-[![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![UI](https://img.shields.io/badge/UI-Jetpack%20Compose%20%2F%20Material%203-blue.svg)](https://developer.android.com/jetpack/compose)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+Notification Reminder is an Android application that repeats sound or vibration alerts while selected apps have active notifications. It is intended for Android devices that do not provide this behavior as a system feature.
 
-A native Android application built with Kotlin and Jetpack Compose that brings Samsung One UI's **Notification Reminders** functionality to Google Pixel devices (including Pixel 10 XL) and stock Android phones.
+## Features
 
----
+- Monitors notifications from user-selected apps.
+- Repeats alerts at 1, 2, 5, 10, or 15-minute intervals.
+- Supports sound, vibration, and overnight quiet hours.
+- Shows the notifications currently eligible for reminders.
+- Pauses existing reminders until a selected app posts another notification.
+- Uses exact alarms when Android grants access and falls back to inexact alarms otherwise.
 
-## 🌟 Key Features
+Android can defer alarms while conserving battery. Granting the optional **Alarms & reminders** access improves timing but does not override platform rate limits.
 
-- 🔁 **Periodic Alert Reminders**: Set recurring chimes and vibration alerts every **1, 2, 5, 10, or 15 minutes** for unread notifications.
-- 📱 **Dynamic Installed App Discovery**: Lists only the apps actually installed on your phone. Toggle reminders per-app (Google Messages, WhatsApp, Phone/Missed Calls, Gmail, etc.).
-- 🌙 **System Dark Mode**: Automatic Material 3 dynamic color scheme adapting seamlessly to your device's light or dark mode setting.
-- 👁️ **Live Active Reminders Dashboard**: Displays a real-time card showing exactly which unread notifications are actively being reminded (App name, title/sender, text snippet, and timestamp).
-- 🛑 **Instant Stop / Clear Action**: Dedicated **[Clear All]** button in the app and a **"Stop Reminders"** action on the persistent notification to instantly halt alarms without rebooting.
-- 🔋 **Screen-Off & Doze Mode Protection**: Uses a persistent Foreground Service, CPU `WakeLock`s, and `SCHEDULE_EXACT_ALARM` to guarantee reliable alerts even when your screen is locked in deep sleep for hours.
+## Requirements
 
----
+- Android 8.0 (API 26) or newer
+- JDK 17
+- Android SDK with API 36 and Build Tools 37
 
-## 🛠️ Architecture
+The app requires Notification Access to inspect active notifications. On Android 12 and newer, it also offers a shortcut to the optional exact-alarm settings page. Notification content remains on the device.
 
-* **`AppNotificationListenerService`**: Subscribes to Android's `NotificationListenerService` to observe system notifications, filter out ongoing/system tasks, and publish active unread items.
-* **`ReminderAlarmReceiver`**: `BroadcastReceiver` invoked by `AlarmManager` to trigger audio/haptic feedback and enforce quiet hours (10:00 PM – 7:00 AM).
-* **`TrackedNotificationRepository`**: Shared reactive `StateFlow` store exposing live active notification states to the Compose UI.
-* **`PreferencesRepository`**: Persists user settings, interval preferences, and per-app toggles via Jetpack DataStore.
+## Build
 
----
-
-## 🚀 Building & Installation via ADB
-
-### Prerequisites
-* JDK 17 or higher
-* Android SDK (API 35 target, API 26 minimum)
-
-### 1. Build Debug APK
 ```bash
-./gradlew assembleDebug
+./gradlew test lint assembleDebug
 ```
-*(The APK will be generated at `app/build/outputs/apk/debug/app-debug.apk`)*
 
-### 2. Install on Device via ADB
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+
+Release builds are intentionally unsigned. Supply a private signing configuration outside source control before distribution:
+
+```bash
+./gradlew assembleRelease
+```
+
+## Install for development
+
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell cmd notification allow_listener \
+  com.example.notificationreminder/.service.AppNotificationListenerService
 ```
 
-### 3. Grant Notification Access via ADB
-```bash
-adb shell cmd notification allow_listener com.example.notificationreminder/.service.AppNotificationListenerService
-```
+Notification Access can also be granted from Android Settings.
 
-### 4. Optional: Battery Optimization Whitelist
-```bash
-adb shell dumpsys deviceidle whitelist +com.example.notificationreminder
-adb shell appops set com.example.notificationreminder SCHEDULE_EXACT_ALARM allow
-```
+## Design
 
----
+- `AppNotificationListenerService` serializes notification snapshots and maintains the foreground status notification.
+- `ReminderAlarmScheduler` owns alarm creation, cancellation, and exact-to-inexact fallback behavior.
+- `ReminderAlarmReceiver` validates current notifications immediately before delivering an alert.
+- `PreferencesRepository` exposes one typed DataStore preferences stream.
+- `TrackedNotificationRepository` publishes the current in-process notification view to the UI.
 
-## 📁 Project Structure
+## License
 
-```
-NotificationReminderApp/
-├── app/
-│   ├── build.gradle.kts
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       └── java/com/example/notificationreminder/
-│           ├── data/
-│           │   ├── PreferencesRepository.kt
-│           │   └── TrackedNotificationRepository.kt
-│           ├── service/
-│           │   ├── AppNotificationListenerService.kt
-│           │   └── ReminderAlarmReceiver.kt
-│           └── ui/
-│               ├── MainActivity.kt
-│               ├── screens/MainScreen.kt
-│               └── theme/Theme.kt
-├── gradle/
-│   └── libs.versions.toml
-├── build.gradle.kts
-├── settings.gradle.kts
-├── .gitignore
-├── LICENSE
-└── README.md
-```
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE)

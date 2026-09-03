@@ -1,181 +1,167 @@
 package com.example.notificationreminder.service
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.CombinedVibration
 import android.os.PowerManager
-import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.VibratorManager
+import android.service.notification.NotificationListenerService
 import android.util.Log
 import com.example.notificationreminder.data.PreferencesRepository
 import com.example.notificationreminder.data.TrackedNotificationRepository
+import java.time.Duration
+import java.time.LocalTime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.time.LocalTime
 
 class ReminderAlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            ACTION_CLEAR_ALL_REMINDERS -> handleClearAll(context)
-            ACTION_REPEAT_REMINDER -> handleRepeatReminder(context)
+            ACTION_CLEAR_ALL_REMINDERS -> clearReminders(context)
+            ACTION_REPEAT_REMINDER -> deliverReminder(context)
         }
     }
 
-    private fun handleClearAll(context: Context) {
-        Log.d(TAG, "Received ACTION_CLEAR_ALL_REMINDERS. Stopping all active reminders.")
-        AppNotificationListenerService.instance?.cancelReminder()
-        TrackedNotificationRepository.clearAll()
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val repeatIntent = Intent(context, ReminderAlarmReceiver::class.java).apply {
-            action = ACTION_REPEAT_REMINDER
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            AppNotificationListenerService.REMINDER_REQ_CODE,
-            repeatIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        alarmManager.cancel(pendingIntent)
-    }
-
-    private fun handleRepeatReminder(context: Context) {
+    private fun clearReminders(context: Context) {
         val pendingResult = goAsync()
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "NotificationReminder::ChimeWakeLock"
-        )
-        wakeLock.acquire(5000L)
-
-        val repository = PreferencesRepository(context.applicationContext)
-
-        CoroutineScope(Dispatchers.IO).launch {
+        val applicationContext = context.applicationContext
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                // Synchronously query active notifications to avoid race condition
-                val service = AppNotificationListenerService.instance
-                val trackedItems = service?.queryTrackedNotifications() ?: emptyList()
-
-                // Update shared state so the UI reflects current reality
-                TrackedNotificationRepository.updateItems(trackedItems)
-
-                if (trackedItems.isEmpty()) {
-                    Log.d(TAG, "No active tracked notifications. Suppressing chime and stopping alarm loop.")
-                    return@launch
-                }
-
-                val quietEnabled = repository.quietHoursEnabledFlow.first()
-                if (quietEnabled) {
-                    val startHour = repository.quietHoursStartFlow.first()
-                    val endHour = repository.quietHoursEndFlow.first()
-                    if (isCurrentTimeInQuietHours(startHour, endHour)) {
-                        Log.d(TAG, "Skipping reminder chime due to active Quiet Hours ($startHour:00 - $endHour:00).")
-                        reschedule(context, repository)
-                        return@launch
-                    }
-                }
-
-                val soundEnabled = repository.soundEnabledFlow.first()
-                val vibrateEnabled = repository.vibrateEnabledFlow.first()
-
-                if (soundEnabled) {
-                    playNotificationChime(context)
-                }
-
-                if (vibrateEnabled) {
-                    triggerVibration(context)
-                }
-
-                reschedule(context, repository)
+                PreferencesRepository(applicationContext).setRemindersPaused(true)
+            } catch (error: Exception) {
+                Log.e(TAG, "Unable to persist paused reminder state", error)
             } finally {
-                if (wakeLock.isHeld) {
-                    wakeLock.release()
+                try {
+                    ReminderAlarmScheduler.cancel(applicationContext)
+                } catch (error: RuntimeException) {
+                    Log.e(TAG, "Unable to cancel the scheduled reminder", error)
+                }
+                TrackedNotificationRepository.clearAll()
+                try {
+                    AppNotificationListenerService.instance?.cancelReminder()
+                } catch (error: RuntimeException) {
+                    Log.e(TAG, "Unable to update the listener service", error)
                 }
                 pendingResult.finish()
             }
         }
     }
 
+    private fun deliverReminder(context: Context) {
+        val pendingResult = goAsync()
+        val applicationContext = context.applicationContext
+        val wakeLock = context.getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "$TAG::Delivery"
+        ).apply {
+            acquire(WAKE_LOCK_TIMEOUT.toMillis())
+        }
+
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                val repository = PreferencesRepository(applicationContext)
+                val preferences = repository.preferencesFlow.first()
+                if (preferences.remindersPaused) {
+                    ReminderAlarmScheduler.cancel(applicationContext)
+                    return@launch
+                }
+
+                val service = AppNotificationListenerService.instance
+                if (service == null) {
+                    recoverListenerService(applicationContext)
+                    return@launch
+                }
+
+                val trackedItems = service.queryTrackedNotifications()
+                if (trackedItems == null) {
+                    recoverListenerService(applicationContext)
+                    return@launch
+                }
+                TrackedNotificationRepository.updateItems(trackedItems)
+                if (trackedItems.isEmpty()) {
+                    ReminderAlarmScheduler.cancel(applicationContext)
+                    return@launch
+                }
+
+                val quietHoursActive = preferences.quietHoursEnabled &&
+                    QuietHoursPolicy.contains(
+                        currentHour = LocalTime.now().hour,
+                        startHour = preferences.quietHoursStart,
+                        endHour = preferences.quietHoursEnd
+                    )
+                if (!quietHoursActive) {
+                    if (preferences.soundEnabled) playNotificationChime(applicationContext)
+                    if (preferences.vibrateEnabled) triggerVibration(applicationContext)
+                }
+
+                ReminderAlarmScheduler.schedule(
+                    applicationContext,
+                    Duration.ofMinutes(preferences.repeatIntervalMinutes.toLong())
+                )
+            } catch (error: Exception) {
+                Log.e(TAG, "Unable to deliver notification reminder", error)
+            } finally {
+                if (wakeLock.isHeld) wakeLock.release()
+                pendingResult.finish()
+            }
+        }
+    }
+
+    private fun recoverListenerService(context: Context) {
+        if (!NotificationAccess.isGranted(context)) {
+            ReminderAlarmScheduler.cancel(context)
+            return
+        }
+
+        NotificationListenerService.requestRebind(
+            ComponentName(context, AppNotificationListenerService::class.java)
+        )
+        ReminderAlarmScheduler.schedule(context, LISTENER_RETRY_DELAY)
+    }
+
     private fun playNotificationChime(context: Context) {
         try {
             val alertUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            val ringtone = RingtoneManager.getRingtone(context, alertUri)
-            ringtone?.play()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to play notification chime", e)
+            RingtoneManager.getRingtone(context, alertUri)?.play()
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Unable to play notification sound", error)
         }
     }
 
     private fun triggerVibration(context: Context) {
         try {
-            val pattern = longArrayOf(0, 300, 200, 300)
-            val effect = VibrationEffect.createWaveform(pattern, -1)
+            val effect = VibrationEffect.createWaveform(longArrayOf(0, 300, 200, 300), -1)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                vibratorManager.vibrate(CombinedVibration.createParallel(effect))
+                context.getSystemService(VibratorManager::class.java)
+                    .vibrate(CombinedVibration.createParallel(effect))
             } else {
                 @Suppress("DEPRECATION")
-                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
-                vibrator.vibrate(effect)
+                (context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator)
+                    .vibrate(effect)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to trigger vibration", e)
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Unable to vibrate", error)
         }
-    }
-
-    private suspend fun reschedule(context: Context, repository: PreferencesRepository) {
-        val intervalMinutes = repository.repeatIntervalFlow.first()
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(context, ReminderAlarmReceiver::class.java).apply {
-            action = ACTION_REPEAT_REMINDER
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            AppNotificationListenerService.REMINDER_REQ_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val triggerTime = SystemClock.elapsedRealtime() + (intervalMinutes * 60 * 1000L)
-        alarmManager.setExactAndAllowWhileIdle(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            triggerTime,
-            pendingIntent
-        )
-    }
-
-    private fun isCurrentTimeInQuietHours(startHour: Int, endHour: Int): Boolean {
-        val currentHour = LocalTime.now().hour
-        return isHourInQuietRange(currentHour, startHour, endHour)
     }
 
     companion object {
-        private const val TAG = "ReminderAlarmReceiver"
-        const val ACTION_REPEAT_REMINDER = "com.example.notificationreminder.ACTION_REPEAT_REMINDER"
-        const val ACTION_CLEAR_ALL_REMINDERS = "com.example.notificationreminder.ACTION_CLEAR_ALL_REMINDERS"
+        const val ACTION_REPEAT_REMINDER =
+            "com.example.notificationreminder.ACTION_REPEAT_REMINDER"
+        const val ACTION_CLEAR_ALL_REMINDERS =
+            "com.example.notificationreminder.ACTION_CLEAR_ALL_REMINDERS"
 
-        /**
-         * Pure function to determine whether a given hour falls inside a quiet hours window.
-         * Handles windows spanning midnight (e.g. 22:00 to 07:00) as well as daytime windows (e.g. 13:00 to 15:00).
-         */
-        fun isHourInQuietRange(currentHour: Int, startHour: Int, endHour: Int): Boolean {
-            return if (startHour < endHour) {
-                currentHour in startHour until endHour
-            } else if (startHour > endHour) {
-                currentHour >= startHour || currentHour < endHour
-            } else {
-                false
-            }
-        }
+        private const val TAG = "ReminderAlarmReceiver"
+        private val LISTENER_RETRY_DELAY = Duration.ofSeconds(30)
+        private val WAKE_LOCK_TIMEOUT = Duration.ofSeconds(10)
     }
 }

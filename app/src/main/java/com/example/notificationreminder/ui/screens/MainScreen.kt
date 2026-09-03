@@ -1,7 +1,6 @@
 package com.example.notificationreminder.ui.screens
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
@@ -50,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.createBitmap
 import com.example.notificationreminder.data.TrackedNotificationItem
 import com.example.notificationreminder.ui.InstalledAppSummary
 import com.example.notificationreminder.ui.MainUiState
@@ -66,7 +66,7 @@ fun Drawable.toImageBitmap(): ImageBitmap {
     }
     val w = if (intrinsicWidth > 0) intrinsicWidth else 48
     val h = if (intrinsicHeight > 0) intrinsicHeight else 48
-    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val bitmap = createBitmap(w, h)
     val canvas = Canvas(bitmap)
     setBounds(0, 0, canvas.width, canvas.height)
     draw(canvas)
@@ -82,14 +82,14 @@ fun AppIcon(
     var iconBitmap by remember(packageName) { mutableStateOf<ImageBitmap?>(null) }
 
     LaunchedEffect(packageName) {
-        withContext(Dispatchers.IO) {
+        iconBitmap = withContext(Dispatchers.IO) {
             val pm = context.packageManager
             val drawable = try {
                 pm.getApplicationIcon(packageName)
             } catch (e: Exception) {
                 null
             }
-            iconBitmap = drawable?.toImageBitmap()
+            drawable?.toImageBitmap()
         }
     }
 
@@ -108,7 +108,8 @@ fun AppIcon(
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
-    onOpenListenerSettings: () -> Unit
+    onOpenListenerSettings: () -> Unit,
+    onOpenExactAlarmSettings: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -118,14 +119,16 @@ fun MainScreen(
                 title = {
                     Column {
                         Text("Notification Reminders", fontWeight = FontWeight.Bold)
-                        val statusText = if (uiState.isListenerPermissionGranted) {
+                        val statusText = if (!uiState.isListenerPermissionGranted) {
+                            "Permission Required"
+                        } else if (uiState.remindersPaused) {
+                            "Paused"
+                        } else {
                             if (uiState.trackedNotifications.isNotEmpty()) {
                                 "Active • ${uiState.trackedNotifications.size} Unread Alert(s)"
                             } else {
                                 "Active • No unread alerts"
                             }
-                        } else {
-                            "Permission Required"
                         }
                         Text(
                             text = statusText,
@@ -159,9 +162,16 @@ fun MainScreen(
                 }
             }
 
+            if (!uiState.canScheduleExactAlarms) {
+                item {
+                    ExactAlarmWarningCard(onOpenExactAlarmSettings)
+                }
+            }
+
             item {
                 ActiveRemindersCard(
                     trackedItems = uiState.trackedNotifications,
+                    remindersPaused = uiState.remindersPaused,
                     onClearAll = { viewModel.clearAllReminders() }
                 )
             }
@@ -226,6 +236,35 @@ fun MainScreen(
 }
 
 @Composable
+fun ExactAlarmWarningCard(onOpenSettings: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Precise Timing Disabled",
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Android may delay reminders to conserve battery. Allow exact alarms for the selected interval.",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(onClick = onOpenSettings) {
+                Text("Allow Precise Timing")
+            }
+        }
+    }
+}
+
+@Composable
 fun PermissionWarningCard(onOpenListenerSettings: () -> Unit) {
     Card(
         colors = CardDefaults.cardColors(
@@ -263,6 +302,7 @@ fun PermissionWarningCard(onOpenListenerSettings: () -> Unit) {
 @Composable
 fun ActiveRemindersCard(
     trackedItems: List<TrackedNotificationItem>,
+    remindersPaused: Boolean,
     onClearAll: () -> Unit
 ) {
     val containerColor = if (trackedItems.isNotEmpty()) {
@@ -301,7 +341,7 @@ fun ActiveRemindersCard(
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                         modifier = Modifier.height(32.dp)
                     ) {
-                        Text("Clear All", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
+                        Text("Pause Current", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
                     }
                 }
             }
@@ -310,7 +350,11 @@ fun ActiveRemindersCard(
 
             if (trackedItems.isEmpty()) {
                 Text(
-                    "No unread notifications are currently being reminded.",
+                    if (remindersPaused) {
+                        "Paused until the next notification from a selected app."
+                    } else {
+                        "No unread notifications are currently being reminded."
+                    },
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

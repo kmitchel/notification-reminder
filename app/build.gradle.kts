@@ -6,12 +6,13 @@ plugins {
 
 android {
     namespace = "com.example.notificationreminder"
-    compileSdk = 35
+    compileSdk = 36
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "com.example.notificationreminder"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 4
         versionName = "1.0.3"
 
@@ -21,7 +22,6 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
