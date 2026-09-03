@@ -1,46 +1,64 @@
 package com.example.notificationreminder.ui.screens
 
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
-import android.os.Build
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.notificationreminder.data.PreferencesRepository
-import com.example.notificationreminder.data.TrackedNotificationRepository
-import com.example.notificationreminder.service.AppNotificationListenerService
-import com.example.notificationreminder.service.ReminderAlarmReceiver
+import com.example.notificationreminder.data.TrackedNotificationItem
+import com.example.notificationreminder.ui.InstalledAppSummary
+import com.example.notificationreminder.ui.MainUiState
+import com.example.notificationreminder.ui.MainViewModel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-data class InstalledAppInfo(
-    val name: String,
-    val packageName: String,
-    val iconBitmap: ImageBitmap? = null
-)
 
 fun Drawable.toImageBitmap(): ImageBitmap {
     if (this is BitmapDrawable && this.bitmap != null) {
@@ -55,65 +73,44 @@ fun Drawable.toImageBitmap(): ImageBitmap {
     return bitmap.asImageBitmap()
 }
 
-suspend fun loadInstalledApps(context: Context): List<InstalledAppInfo> = withContext(Dispatchers.IO) {
-    val pm = context.packageManager
-    val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
-        addCategory(Intent.CATEGORY_LAUNCHER)
-    }
+@Composable
+fun AppIcon(
+    packageName: String,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var iconBitmap by remember(packageName) { mutableStateOf<ImageBitmap?>(null) }
 
-    val resolveInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        pm.queryIntentActivities(mainIntent, PackageManager.ResolveInfoFlags.of(0))
-    } else {
-        @Suppress("DEPRECATION")
-        pm.queryIntentActivities(mainIntent, 0)
-    }
-
-    resolveInfos
-        .mapNotNull { resolveInfo ->
-            val pkg = resolveInfo.activityInfo.packageName
-            if (pkg == context.packageName) return@mapNotNull null
-            val name = resolveInfo.loadLabel(pm).toString()
+    LaunchedEffect(packageName) {
+        withContext(Dispatchers.IO) {
+            val pm = context.packageManager
             val drawable = try {
-                resolveInfo.loadIcon(pm)
+                pm.getApplicationIcon(packageName)
             } catch (e: Exception) {
                 null
             }
-            val bitmap = drawable?.toImageBitmap()
-            InstalledAppInfo(name = name, packageName = pkg, iconBitmap = bitmap)
+            iconBitmap = drawable?.toImageBitmap()
         }
-        .distinctBy { it.packageName }
-        .sortedBy { it.name.lowercase() }
+    }
+
+    if (iconBitmap != null) {
+        Image(
+            bitmap = iconBitmap!!,
+            contentDescription = null,
+            modifier = modifier
+        )
+    } else {
+        Spacer(modifier = modifier)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    repository: PreferencesRepository,
-    isListenerGranted: Boolean,
+    viewModel: MainViewModel,
     onOpenListenerSettings: () -> Unit
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val isDark = isSystemInDarkTheme()
-
-    val enabledApps by repository.enabledAppsFlow.collectAsState(initial = emptySet())
-    val repeatInterval by repository.repeatIntervalFlow.collectAsState(initial = 5)
-    val vibrateEnabled by repository.vibrateEnabledFlow.collectAsState(initial = true)
-    val soundEnabled by repository.soundEnabledFlow.collectAsState(initial = true)
-    val quietHoursEnabled by repository.quietHoursEnabledFlow.collectAsState(initial = false)
-
-    val trackedItems by TrackedNotificationRepository.trackedItems.collectAsState()
-
-    var installedApps by remember { mutableStateOf<List<InstalledAppInfo>>(emptyList()) }
-    var isLoadingApps by remember { mutableStateOf(true) }
-
-    LaunchedEffect(Unit) {
-        installedApps = loadInstalledApps(context)
-        isLoadingApps = false
-        AppNotificationListenerService.instance?.syncActiveNotifications()
-    }
-
-    val intervalOptions = listOf(1, 2, 5, 10, 15)
+    val uiState by viewModel.uiState.collectAsState()
 
     Scaffold(
         topBar = {
@@ -121,15 +118,22 @@ fun MainScreen(
                 title = {
                     Column {
                         Text("Notification Reminders", fontWeight = FontWeight.Bold)
-                        Text(
-                            text = if (isListenerGranted) {
-                                if (trackedItems.isNotEmpty()) "Active • ${trackedItems.size} Unread Alert(s)" else "Active • No unread alerts"
-                            } else "Permission Required",
-                            fontSize = 12.sp,
-                            color = if (isListenerGranted) {
-                                if (isDark) Color(0xFF81C784) else Color(0xFF2E7D32)
+                        val statusText = if (uiState.isListenerPermissionGranted) {
+                            if (uiState.trackedNotifications.isNotEmpty()) {
+                                "Active • ${uiState.trackedNotifications.size} Unread Alert(s)"
                             } else {
-                                if (isDark) Color(0xFFFFB74D) else Color(0xFFE65100)
+                                "Active • No unread alerts"
+                            }
+                        } else {
+                            "Permission Required"
+                        }
+                        Text(
+                            text = statusText,
+                            fontSize = 12.sp,
+                            color = if (uiState.isListenerPermissionGranted) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
                             }
                         )
                     }
@@ -149,231 +153,45 @@ fun MainScreen(
         ) {
             item { Spacer(modifier = Modifier.height(4.dp)) }
 
-            // Permission Warning Card
-            if (!isListenerGranted) {
+            if (!uiState.isListenerPermissionGranted) {
                 item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isDark) Color(0xFF3E2723) else Color(0xFFFFF3E0)
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                "Notification Access Needed",
-                                fontWeight = FontWeight.Bold,
-                                color = if (isDark) Color(0xFFFFB74D) else Color(0xFFE65100),
-                                fontSize = 16.sp
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                "To repeat missed alerts from your apps, please grant Notification Access permission.",
-                                fontSize = 14.sp,
-                                color = if (isDark) Color(0xFFFFD180) else Color(0xFF5D4037)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = onOpenListenerSettings,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isDark) Color(0xFFFF8F00) else Color(0xFFE65100)
-                                )
-                            ) {
-                                Text("Grant Permission", color = Color.White)
-                            }
-                        }
-                    }
+                    PermissionWarningCard(onOpenListenerSettings = onOpenListenerSettings)
                 }
             }
 
-            // Live Active Reminders Card
             item {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (trackedItems.isNotEmpty()) {
-                            if (isDark) Color(0xFF1B382B) else Color(0xFFE8F5E9)
-                        } else MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Currently Reminding (${trackedItems.size})",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
-                                color = if (trackedItems.isNotEmpty()) {
-                                    if (isDark) Color(0xFF81C784) else Color(0xFF2E7D32)
-                                } else MaterialTheme.colorScheme.onSurface
-                            )
-                            if (trackedItems.isNotEmpty()) {
-                                Button(
-                                    onClick = {
-                                        val intent = Intent(context, ReminderAlarmReceiver::class.java).apply {
-                                            action = ReminderAlarmReceiver.ACTION_CLEAR_ALL_REMINDERS
-                                        }
-                                        context.sendBroadcast(intent)
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp)
-                                ) {
-                                    Text("Clear All", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        if (trackedItems.isEmpty()) {
-                            Text(
-                                "No unread notifications are currently being reminded.",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                trackedItems.forEach { item ->
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isDark) MaterialTheme.colorScheme.surface else Color.White,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(
-                                                    item.appName,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 13.sp,
-                                                    color = if (isDark) Color(0xFF81C784) else Color(0xFF1B5E20)
-                                                )
-                                                Text(
-                                                    timeFormat.format(Date(item.postTime)),
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                            if (item.title.isNotEmpty()) {
-                                                Text(
-                                                    item.title,
-                                                    fontWeight = FontWeight.Medium,
-                                                    fontSize = 13.sp,
-                                                    maxLines = 1,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                )
-                                            }
-                                            if (item.text.isNotEmpty()) {
-                                                Text(
-                                                    item.text,
-                                                    fontSize = 12.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 2
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                ActiveRemindersCard(
+                    trackedItems = uiState.trackedNotifications,
+                    onClearAll = { viewModel.clearAllReminders() }
+                )
             }
 
-            // Interval Selector
             item {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Repeat Interval", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                        Text("Remind again every:", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            intervalOptions.forEach { interval ->
-                                FilterChip(
-                                    selected = repeatInterval == interval,
-                                    onClick = {
-                                        scope.launch { repository.setRepeatInterval(interval) }
-                                    },
-                                    label = { Text("${interval}m") }
-                                )
-                            }
-                        }
-                    }
-                }
+                IntervalSelectorCard(
+                    currentInterval = uiState.repeatIntervalMinutes,
+                    onIntervalSelected = { viewModel.setRepeatInterval(it) }
+                )
             }
 
-            // Alert Preferences
             item {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Alert Settings", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Sound Alert")
-                            Switch(
-                                checked = soundEnabled,
-                                onCheckedChange = { scope.launch { repository.setSoundEnabled(it) } }
-                            )
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Vibration")
-                            Switch(
-                                checked = vibrateEnabled,
-                                onCheckedChange = { scope.launch { repository.setVibrateEnabled(it) } }
-                            )
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text("Quiet Hours")
-                                Text("Silence during 10:00 PM - 7:00 AM", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Switch(
-                                checked = quietHoursEnabled,
-                                onCheckedChange = { scope.launch { repository.setQuietHoursEnabled(it) } }
-                            )
-                        }
-                    }
-                }
+                AlertSettingsCard(
+                    soundEnabled = uiState.soundEnabled,
+                    vibrateEnabled = uiState.vibrateEnabled,
+                    onSoundToggle = { viewModel.setSoundEnabled(it) },
+                    onVibrateToggle = { viewModel.setVibrateEnabled(it) }
+                )
             }
 
-            // Installed Apps Section Header
+            item {
+                QuietHoursCard(
+                    quietHoursEnabled = uiState.quietHoursEnabled,
+                    startHour = uiState.quietHoursStart,
+                    endHour = uiState.quietHoursEnd,
+                    onToggle = { viewModel.setQuietHoursEnabled(it) },
+                    onSetRange = { start, end -> viewModel.setQuietHoursRange(start, end) }
+                )
+            }
+
             item {
                 Row(
                     modifier = Modifier
@@ -383,62 +201,355 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "Apps to Remind (${installedApps.size})",
+                        "Apps to Remind (${uiState.installedApps.size})",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
-                    if (isLoadingApps) {
+                    if (uiState.isLoadingApps) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
                 }
             }
 
-            items(installedApps, key = { it.packageName }) { app ->
-                val isChecked = enabledApps.contains(app.packageName)
-                Card(
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            items(uiState.installedApps, key = { it.packageName }) { app ->
+                val isChecked = uiState.enabledApps.contains(app.packageName)
+                AppRowCard(
+                    app = app,
+                    isChecked = isChecked,
+                    onToggle = { viewModel.toggleAppEnabled(app.packageName, it) }
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(24.dp)) }
+        }
+    }
+}
+
+@Composable
+fun PermissionWarningCard(onOpenListenerSettings: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Notification Access Needed",
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                fontSize = 16.sp
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "To repeat missed alerts from your apps, please grant Notification Access permission.",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onOpenListenerSettings,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("Grant Permission", color = MaterialTheme.colorScheme.onError)
+            }
+        }
+    }
+}
+
+@Composable
+fun ActiveRemindersCard(
+    trackedItems: List<TrackedNotificationItem>,
+    onClearAll: () -> Unit
+) {
+    val containerColor = if (trackedItems.isNotEmpty()) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Currently Reminding (${trackedItems.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = if (trackedItems.isNotEmpty()) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
+                )
+                if (trackedItems.isNotEmpty()) {
+                    Button(
+                        onClick = onClearAll,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (app.iconBitmap != null) {
-                                Image(
-                                    bitmap = app.iconBitmap,
-                                    contentDescription = app.name,
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .padding(end = 12.dp)
-                                )
-                            } else {
-                                Spacer(modifier = Modifier.width(36.dp))
-                            }
-                            Column {
-                                Text(app.name, fontWeight = FontWeight.Medium, fontSize = 15.sp)
-                                Text(app.packageName, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                        Switch(
-                            checked = isChecked,
-                            onCheckedChange = { enabled ->
-                                scope.launch {
-                                    repository.toggleAppEnabled(app.packageName, enabled)
-                                }
-                            }
-                        )
+                        Text("Clear All", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
                     }
                 }
             }
 
-            item { Spacer(modifier = Modifier.height(24.dp)) }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (trackedItems.isEmpty()) {
+                Text(
+                    "No unread notifications are currently being reminded.",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    trackedItems.forEach { item ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        item.appName,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        timeFormat.format(Date(item.postTime)),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (item.title.isNotEmpty()) {
+                                    Text(
+                                        item.title,
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                if (item.text.isNotEmpty()) {
+                                    Text(
+                                        item.text,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun IntervalSelectorCard(
+    currentInterval: Int,
+    onIntervalSelected: (Int) -> Unit
+) {
+    val intervalOptions = listOf(1, 2, 5, 10, 15)
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Repeat Interval", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Text("Remind again every:", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                intervalOptions.forEach { interval ->
+                    FilterChip(
+                        selected = currentInterval == interval,
+                        onClick = { onIntervalSelected(interval) },
+                        label = { Text("${interval}m") }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AlertSettingsCard(
+    soundEnabled: Boolean,
+    vibrateEnabled: Boolean,
+    onSoundToggle: (Boolean) -> Unit,
+    onVibrateToggle: (Boolean) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Alert Settings", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Sound Alert")
+                Switch(
+                    checked = soundEnabled,
+                    onCheckedChange = onSoundToggle
+                )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Vibration")
+                Switch(
+                    checked = vibrateEnabled,
+                    onCheckedChange = onVibrateToggle
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun QuietHoursCard(
+    quietHoursEnabled: Boolean,
+    startHour: Int,
+    endHour: Int,
+    onToggle: (Boolean) -> Unit,
+    onSetRange: (Int, Int) -> Unit
+) {
+    fun formatHour(hour: Int): String {
+        val h = if (hour == 0 || hour == 24) 12 else if (hour > 12) hour - 12 else hour
+        val amPm = if (hour in 12..23) "PM" else "AM"
+        return "$h:00 $amPm"
+    }
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Quiet Hours", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    Text(
+                        "Silence alerts between ${formatHour(startHour)} and ${formatHour(endHour)}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = quietHoursEnabled,
+                    onCheckedChange = onToggle
+                )
+            }
+
+            if (quietHoursEnabled) {
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text("Adjust Schedule:", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val presets = listOf(
+                        Triple("10PM - 7AM", 22, 7),
+                        Triple("11PM - 8AM", 23, 8),
+                        Triple("12AM - 7AM", 0, 7)
+                    )
+                    presets.forEach { (label, s, e) ->
+                        FilterChip(
+                            selected = startHour == s && endHour == e,
+                            onClick = { onSetRange(s, e) },
+                            label = { Text(label, fontSize = 12.sp) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AppRowCard(
+    app: InstalledAppSummary,
+    isChecked: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                AppIcon(
+                    packageName = app.packageName,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .padding(end = 12.dp)
+                )
+                Column {
+                    Text(app.name, fontWeight = FontWeight.Medium, fontSize = 15.sp)
+                    Text(
+                        app.packageName,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Switch(
+                checked = isChecked,
+                onCheckedChange = onToggle
+            )
         }
     }
 }

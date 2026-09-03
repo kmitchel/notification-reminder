@@ -19,7 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.util.Calendar
+import java.time.LocalTime
 
 class ReminderAlarmReceiver : BroadcastReceiver() {
 
@@ -155,17 +155,27 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
     }
 
     private fun isCurrentTimeInQuietHours(startHour: Int, endHour: Int): Boolean {
-        val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return if (startHour < endHour) {
-            currentHour in startHour until endHour
-        } else {
-            currentHour >= startHour || currentHour < endHour
-        }
+        val currentHour = LocalTime.now().hour
+        return isHourInQuietRange(currentHour, startHour, endHour)
     }
 
     companion object {
         private const val TAG = "ReminderAlarmReceiver"
         const val ACTION_REPEAT_REMINDER = "com.example.notificationreminder.ACTION_REPEAT_REMINDER"
         const val ACTION_CLEAR_ALL_REMINDERS = "com.example.notificationreminder.ACTION_CLEAR_ALL_REMINDERS"
+
+        /**
+         * Pure function to determine whether a given hour falls inside a quiet hours window.
+         * Handles windows spanning midnight (e.g. 22:00 to 07:00) as well as daytime windows (e.g. 13:00 to 15:00).
+         */
+        fun isHourInQuietRange(currentHour: Int, startHour: Int, endHour: Int): Boolean {
+            return if (startHour < endHour) {
+                currentHour in startHour until endHour
+            } else if (startHour > endHour) {
+                currentHour >= startHour || currentHour < endHour
+            } else {
+                false
+            }
+        }
     }
 }

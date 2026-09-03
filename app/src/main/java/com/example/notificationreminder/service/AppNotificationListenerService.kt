@@ -21,13 +21,16 @@ import com.example.notificationreminder.data.TrackedNotificationRepository
 import com.example.notificationreminder.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class AppNotificationListenerService : NotificationListenerService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var preferencesJob: Job? = null
     private lateinit var repository: PreferencesRepository
 
     override fun onCreate() {
@@ -38,9 +41,20 @@ class AppNotificationListenerService : NotificationListenerService() {
         Log.d(TAG, "Notification Listener Service created.")
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_SYNC_NOTIFICATIONS -> syncActiveNotifications()
+            ACTION_CANCEL_REMINDERS -> cancelReminder()
+        }
+        return START_STICKY
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        preferencesJob?.cancel()
+        scope.cancel()
         instance = null
+        Log.d(TAG, "Notification Listener Service destroyed, coroutine scope cancelled.")
     }
 
     override fun onListenerConnected() {
@@ -120,7 +134,8 @@ class AppNotificationListenerService : NotificationListenerService() {
     }
 
     private fun observePreferences() {
-        scope.launch {
+        preferencesJob?.cancel()
+        preferencesJob = scope.launch {
             repository.enabledAppsFlow.collect { enabledApps ->
                 syncActiveNotifications(enabledApps)
             }
@@ -129,11 +144,7 @@ class AppNotificationListenerService : NotificationListenerService() {
 
     /**
      * Queries the system for active notifications and updates tracked state.
-     * This method is safe to call from any thread — it launches work on Dispatchers.IO
-     * and updates shared state atomically.
-     *
-     * For synchronous notification querying (e.g. from ReminderAlarmReceiver),
-     * use [queryTrackedNotifications] instead.
+     * Safe to call from any thread.
      */
     fun syncActiveNotifications(enabledApps: Set<String>? = null) {
         try {
@@ -162,8 +173,7 @@ class AppNotificationListenerService : NotificationListenerService() {
 
     /**
      * Synchronously queries active notifications and returns the tracked list.
-     * Used by [ReminderAlarmReceiver] to avoid race conditions between async sync
-     * and the chime decision.
+     * Used by [ReminderAlarmReceiver] to avoid race conditions.
      */
     suspend fun queryTrackedNotifications(): List<TrackedNotificationItem> {
         val activeNotifs = try {
@@ -292,6 +302,10 @@ class AppNotificationListenerService : NotificationListenerService() {
         private const val CHANNEL_ID = "reminder_service_channel"
         const val REMINDER_REQ_CODE = 1001
         private const val NOTIFICATION_ID = 9001
+
+        const val ACTION_SYNC_NOTIFICATIONS = "com.example.notificationreminder.ACTION_SYNC_NOTIFICATIONS"
+        const val ACTION_CANCEL_REMINDERS = "com.example.notificationreminder.ACTION_CANCEL_REMINDERS"
+
         @Volatile
         var instance: AppNotificationListenerService? = null
     }
